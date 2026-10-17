@@ -1,0 +1,17 @@
+[project]
+name = "bnb2"
+version = "0.1.0"
+description = "사내 문서 기반 슬랙 Q&A 봇 (LangGraph + RAG + Langfuse)"
+readme = "README.md"
+authors = [
+    { name = "hyeonho", email = "loopoi1021@gmail.com" }
+]
+requires-python = ">=3.12"
+dependencies = []
+
+[project.scripts]
+bnb2 = "bnb2:main"
+
+[build-system]
+requires = ["uv_build>=0.10.11,<0.11.0"]
+build-backend = "uv_build"
