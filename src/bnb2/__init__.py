@@ -7,7 +7,8 @@ USAGE = """사용법:
   uv run bnb2 search "질문"     검색 결과 top-4 보기
   uv run bnb2 ask "질문"        LangGraph 전체 실행, 노드별 State 변화 보기
   uv run bnb2 graph             그래프 구조를 Mermaid 로 출력
-  uv run bnb2 dataset           시험지 94문제를 Langfuse Dataset 으로 등록"""
+  uv run bnb2 dataset           시험지 94문제를 Langfuse Dataset 으로 등록
+  uv run bnb2 eval 이름 [개수]   시험 + 채점 (개수를 주면 주제가 다른 문제 n개만)"""
 
 
 def main() -> None:
@@ -33,5 +34,9 @@ def main() -> None:
         from bnb2.evaluate import upload
 
         upload()
+    elif args[:1] == ["eval"] and len(args) > 1:
+        from bnb2.evaluate import experiment
+
+        experiment(int(args[2]) if len(args) > 2 else None, run_name=args[1])
     else:
         print(USAGE)
