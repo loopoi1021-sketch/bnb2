@@ -153,13 +153,18 @@ def build():
 
 def answer(question: str, *, user_id: str | None = None, session_id: str | None = None,
            tags: list[str] | None = None) -> State:
-    """질문 하나를 끝까지 처리해 최종 State 를 돌려준다. 실행 기록은 Langfuse 로 간다 (슬랙 봇용)."""
+    """질문 하나를 끝까지 처리해 최종 State 를 돌려준다. 실행 기록은 Langfuse 로 간다 (슬랙 봇용).
+
+    돌려주는 dict 의 trace_id 는 이 실행의 Langfuse 트레이스 ID. 👍/👎 피드백을 이 트레이스에 붙인다.
+    """
     from langfuse import propagate_attributes
 
     from bnb2.tracing import handler
 
+    h = handler()
     with propagate_attributes(trace_name="bnb2", user_id=user_id, session_id=session_id, tags=tags):
-        return build().invoke({"question": question}, {"callbacks": [handler()], "run_name": "bnb2"})
+        state = build().invoke({"question": question}, {"callbacks": [h], "run_name": "bnb2"})
+    return {**state, "trace_id": h.last_trace_id}
 
 
 def run(question: str) -> None:

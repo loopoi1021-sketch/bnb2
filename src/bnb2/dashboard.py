@@ -48,6 +48,10 @@ WIDGETS = [
     ("Claude 토큰 (모델별)", "모델별 토큰 합계",
      "observations", ["providedModelName"], [("totalTokens", "sum")], [eq("type", "GENERATION")],
      "HORIZONTAL_BAR", 6, 12, 6, 6),
+    ("직원 만족도 (👍 비율)", "슬랙 👍=1, 👎=0 의 평균",
+     "scores-numeric", [], [("value", "avg")], [eq("name", "user_feedback")], "NUMBER", 0, 18, 4, 6),
+    ("👍/👎 개수", "슬랙 피드백 수",
+     "scores-numeric", ["value"], [("count", "count")], [eq("name", "user_feedback")], "PIE", 4, 18, 4, 6),
 ]
 
 

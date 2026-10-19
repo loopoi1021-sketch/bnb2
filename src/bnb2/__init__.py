@@ -11,7 +11,8 @@ USAGE = """사용법:
   uv run bnb2 eval 이름 [개수]   시험 + 채점 (개수를 주면 주제가 다른 문제 n개만)
   uv run bnb2 report 이름       저장된 시험 결과로 지표만 다시 집계 (API 호출 없음)
   uv run bnb2 dashboard         Langfuse 대시보드 생성 (다시 실행하면 새로 만듦)
-  uv run bnb2 slack             슬랙 봇 실행 (Socket Mode, Ctrl+C 로 종료)"""
+  uv run bnb2 slack             슬랙 봇 실행 (Socket Mode, Ctrl+C 로 종료)
+  uv run bnb2 feedback [--comments] [--csv]   슬랙 피드백 목록 (코멘트만 / CSV 로 내보내기)"""
 
 
 def main() -> None:
@@ -53,5 +54,9 @@ def main() -> None:
         from bnb2.slack import run
 
         run()
+    elif args[:1] == ["feedback"]:
+        from bnb2.feedback import run
+
+        run(args[1:])
     else:
         print(USAGE)
