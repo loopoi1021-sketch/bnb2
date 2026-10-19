@@ -1,0 +1,21 @@
+# bnb2 인프라: 검색용 pgvector 하나. Langfuse 는 Cloud(jp.cloud.langfuse.com)를 쓴다.
+services:
+  pgvector:
+    image: pgvector/pgvector:0.8.7-pg17
+    restart: unless-stopped
+    environment:
+      POSTGRES_USER: bnb2
+      POSTGRES_PASSWORD: bnb2
+      POSTGRES_DB: bnb2
+    ports:
+      - 127.0.0.1:5433:5432 # 5432 는 기존 bnb 프로젝트가 사용 중
+    volumes:
+      - pgvector_data:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U bnb2"]
+      interval: 3s
+      timeout: 3s
+      retries: 10
+
+volumes:
+  pgvector_data:
