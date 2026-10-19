@@ -151,6 +151,17 @@ def build():
     return g.compile()
 
 
+def answer(question: str, *, user_id: str | None = None, session_id: str | None = None,
+           tags: list[str] | None = None) -> State:
+    """질문 하나를 끝까지 처리해 최종 State 를 돌려준다. 실행 기록은 Langfuse 로 간다 (슬랙 봇용)."""
+    from langfuse import propagate_attributes
+
+    from bnb2.tracing import handler
+
+    with propagate_attributes(trace_name="bnb2", user_id=user_id, session_id=session_id, tags=tags):
+        return build().invoke({"question": question}, {"callbacks": [handler()], "run_name": "bnb2"})
+
+
 def run(question: str) -> None:
     """노드가 하나 끝날 때마다 그 노드가 State 에 쓴 값을 출력한다. 실행 기록은 Langfuse 로 간다."""
     from langfuse import propagate_attributes

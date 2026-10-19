@@ -1,6 +1,7 @@
 """3단계: 검색. 질문 → Voyage 임베딩(query) → pgvector 에서 가까운 청크 top-k."""
 
 import os
+import time
 
 import psycopg
 import voyageai
@@ -16,7 +17,14 @@ _query_cache: dict[str, list[float]] = {}
 def _embed(texts: list[str]) -> list[list[float]]:
     # 문서는 input_type="document", 질문은 "query". 같은 모델이어야 같은 '의미 지도'에서 비교된다.
     client = voyageai.Client(api_key=os.environ["VOYAGE_API_KEY"])
-    return client.embed(texts, model=EMBED_MODEL, input_type="query").embeddings
+    # shortcut: 무료 한도(분당 3회)에 걸리면 20초씩 기다려 최대 3번 재시도. Voyage 에 카드를 등록하면 필요 없다
+    for wait in (20, 20, 20, None):
+        try:
+            return client.embed(texts, model=EMBED_MODEL, input_type="query").embeddings
+        except voyageai.error.RateLimitError:
+            if wait is None:
+                raise
+            time.sleep(wait)
 
 
 def warm_query_cache(questions: list[str]) -> None:

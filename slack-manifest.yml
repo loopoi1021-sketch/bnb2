@@ -1,0 +1,28 @@
+# 슬랙 앱 설정. api.slack.com/apps → Create New App → From a manifest 에 붙여넣으면 아래 설정으로 앱이 만들어진다.
+display_information:
+  name: bnb2
+  description: 숙소 운영 문서 기반 사내 Q&A 봇
+features:
+  bot_user:
+    display_name: bnb2
+    always_online: true
+  app_home:
+    messages_tab_enabled: true # 봇에게 DM 으로도 물어볼 수 있게
+    messages_tab_read_only_enabled: false
+oauth_config:
+  scopes:
+    bot:
+      - app_mentions:read # 채널에서 @bnb2 멘션 받기
+      - chat:write # 답변 보내기
+      - reactions:write # 👀 / ✅ 이모지 달기
+      - im:history # DM 받기
+settings:
+  event_subscriptions:
+    bot_events:
+      - app_mention
+      - message.im
+  interactivity:
+    is_enabled: true # 8단계 👍/👎 버튼용
+  socket_mode_enabled: true # 공개 서버 없이 내 컴퓨터에서 연결
+  org_deploy_enabled: false
+  token_rotation_enabled: false
