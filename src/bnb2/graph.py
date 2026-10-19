@@ -152,9 +152,17 @@ def build():
 
 
 def run(question: str) -> None:
-    """노드가 하나 끝날 때마다 그 노드가 State 에 쓴 값을 출력한다."""
+    """노드가 하나 끝날 때마다 그 노드가 State 에 쓴 값을 출력한다. 실행 기록은 Langfuse 로 간다."""
+    from langfuse import propagate_attributes
+
+    from bnb2.tracing import client, handler
+
     print(f"❓ {question}\n")
-    for step in build().stream({"question": question}, stream_mode="updates"):
+    config = {"callbacks": [handler()], "run_name": "bnb2"}
+    with propagate_attributes(trace_name="bnb2", tags=["cli"]):
+        steps = list(build().stream({"question": question}, config, stream_mode="updates"))
+    client().flush()  # 프로그램이 바로 끝나므로, 쌓인 기록을 지금 전송
+    for step in steps:
         for node, update in step.items():
             print(f"── {node} ──")
             for k, v in update.items():
