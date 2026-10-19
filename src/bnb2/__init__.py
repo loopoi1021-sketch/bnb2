@@ -4,7 +4,9 @@ from dotenv import load_dotenv
 
 USAGE = """사용법:
   uv run bnb2 ingest            문서 적재 (kb → 청크 → 임베딩 → pgvector)
-  uv run bnb2 search "질문"     검색 결과 top-4 보기"""
+  uv run bnb2 search "질문"     검색 결과 top-4 보기
+  uv run bnb2 ask "질문"        LangGraph 전체 실행, 노드별 State 변화 보기
+  uv run bnb2 graph             그래프 구조를 Mermaid 로 출력"""
 
 
 def main() -> None:
@@ -18,5 +20,13 @@ def main() -> None:
         from bnb2.retrieve import run
 
         run(" ".join(args[1:]))
+    elif args[:1] == ["ask"] and len(args) > 1:
+        from bnb2.graph import run
+
+        run(" ".join(args[1:]))
+    elif args[:1] == ["graph"]:
+        from bnb2.graph import build
+
+        print(build().get_graph().draw_mermaid())
     else:
         print(USAGE)
