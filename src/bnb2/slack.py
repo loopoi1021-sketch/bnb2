@@ -9,7 +9,7 @@ from slack_bolt import App
 from slack_bolt.adapter.socket_mode import SocketModeHandler
 from slack_sdk.errors import SlackApiError
 
-from bnb2 import feedback
+from bnb2 import feedback, store
 from bnb2.graph import answer
 from bnb2.tracing import client as langfuse, mask_text
 
@@ -104,12 +104,15 @@ def handle(event: dict, client, logger: logging.Logger) -> None:
     channel, ts = event["channel"], event["ts"]
     thread = event.get("thread_ts")  # 스레드 안에서 물으면 그 스레드에, 아니면 채널에 바로 답한다 (None 이면 채널)
     react(client, channel, ts, "eyes")
+    session = f"{channel}-{thread or ts}"
     try:
-        state = answer(question, user_id=event.get("user"), session_id=f"{channel}-{thread or ts}", tags=["slack"])
+        state = answer(question, user_id=event.get("user"), session_id=session, tags=["slack"])
         text, done, trace_id = make_reply(state), "white_check_mark", state["trace_id"]
-    except Exception:
+    except Exception as e:
         logger.exception("답변 실패: %s", question)
+        state = {"question": question, "error": f"{type(e).__name__}: {e}"}
         text, done, trace_id = ERROR_REPLY, "warning", None
+    store.record({**state, "reply": text}, channel="slack", user=event.get("user"), thread=session)
     client.chat_postMessage(channel=channel, thread_ts=thread, text=text,
                             blocks=reply_blocks(text, trace_id, question))
     react(client, channel, ts, "eyes", remove=True)

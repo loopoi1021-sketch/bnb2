@@ -1,6 +1,7 @@
 """4단계: LangGraph. 분류 → 검색 → 답변 → 근거 검사, 분기로 사람 판단/잡담 처리."""
 
-from typing import Literal, TypedDict
+import time
+from typing import Annotated, Literal, TypedDict
 
 from langchain_anthropic import ChatAnthropic
 from langgraph.graph import END, START, StateGraph
@@ -9,9 +10,14 @@ from pydantic import BaseModel, Field
 from bnb2.retrieve import search
 
 MODEL = "claude-haiku-5-5"  # 기존 bnb 와 같은 모델 → 공정 비교
+PRICE = (0.10, 0.50)  # MODEL 의 USD / 100만 토큰 (입력, 출력). 모델을 바꾸면 같이 고친다
 
 NOT_FOUND = "문서에서 찾지 못했어요. 담당자에게 확인 후 알려드릴게요."
 ESCALATE = "🚨 담당자 판단이 필요한 질문이에요. 담당자에게 전달할게요."
+
+
+def merge(a: dict, b: dict) -> dict:
+    return {**a, **b}
 
 
 class State(TypedDict, total=False):
@@ -25,6 +31,8 @@ class State(TypedDict, total=False):
     direct: bool  # ④ check: 질문에 직접 답했나 ("문서엔 없고 참고로…" 같은 부분 답변이면 False)
     check_reason: str  # ④ check: 판정 이유
     reply: str  # 최종 답변 (슬랙에 보낼 글)
+    latency_ms: Annotated[dict, merge]  # 노드별 걸린 시간. 노드마다 자기 칸만 써서 합친다
+    tokens: Annotated[dict, merge]  # 노드별 Claude 토큰 {"input": n, "output": n}
 
 
 # ── Claude 응답 형식 (with_structured_output 이 이 모양의 JSON 만 받도록 강제) ──
@@ -44,12 +52,31 @@ class Answer(BaseModel):
 
 class Check(BaseModel):
     grounded: bool = Field(description="답변의 모든 내용이 문서에 실제로 있으면 true")
-    direct: bool = Field(description="답변이 질문에 직접 답하면 true. '문서에 없다'는 말이나 관련 정보만 있으면 false")
+    direct: bool = Field(description="답변이 질문의 핵심에 답하면 true. 핵심에 '문서에 없다'는 말이나 관련 정보만 있으면 false")
     reason: str = Field(description="판정 이유 한 문장. false 면 문서에 없는 내용이 무엇인지")
 
 
 def llm() -> ChatAnthropic:
     return ChatAnthropic(model=MODEL, max_tokens=1024)
+
+
+def usage(msg) -> dict:
+    u = msg.usage_metadata or {}
+    return {"input": u.get("input_tokens", 0), "output": u.get("output_tokens", 0)}
+
+
+def ask(schema, messages):
+    """구조화 출력 + 토큰 수. include_raw: 파싱 결과와 원본 응답(토큰 수가 들어 있음)을 같이 받는다."""
+    r = llm().with_structured_output(schema, include_raw=True).invoke(messages)
+    if r["parsed"] is None:  # include_raw 를 켜면 파싱 실패가 예외로 안 올라와서 직접 올린다
+        raise r["parsing_error"] or ValueError(f"{schema.__name__} 응답을 읽지 못함")
+    return r["parsed"], usage(r["raw"])
+
+
+def cost(state: dict) -> float:
+    """질문 1개의 Claude 비용 (USD)."""
+    t = state.get("tokens", {}).values()
+    return (sum(x["input"] for x in t) * PRICE[0] + sum(x["output"] for x in t) * PRICE[1]) / 1_000_000
 
 
 # ── 노드: State 를 받아서, 바꿀 칸만 dict 로 돌려준다 ──
@@ -62,10 +89,8 @@ CLASSIFY_PROMPT = """너는 숙소 운영팀의 사내 도우미야. 직원(공�
 
 
 def classify(state: State) -> State:
-    r = llm().with_structured_output(Classification).invoke(
-        [("system", CLASSIFY_PROMPT), ("human", state["question"])]
-    )
-    return {"intent": r.intent, "reason": r.reason}
+    r, t = ask(Classification, [("system", CLASSIFY_PROMPT), ("human", state["question"])])
+    return {"intent": r.intent, "reason": r.reason, "tokens": {"classify": t}}
 
 
 def retrieve(state: State) -> State:
@@ -75,7 +100,11 @@ def retrieve(state: State) -> State:
 GENERATE_PROMPT = """너는 숙소 운영팀의 사내 도우미야. 직원의 질문에 <문서>만 보고 답해.
 
 - <문서>에 있는 내용만 써. 상식이나 추측으로 채우지 마.
-- <문서>에 질문에 대한 직접적인 답이 없으면 answer 를 빈 문자열로 둬.
+- 첫 문장에 결론(예/아니오, 시간, 장소)을 먼저 말해. 문서의 사실에서 바로 따라 나오는 결론은 말해도 돼.
+  예: 문서에 "입실 당일 11시부터 짐 보관 가능"이 있으면 "12시부터 가능하냐"에 "네, 가능합니다".
+- 질문과 같은 표현이 문서에 없어도, 문서 내용으로 답할 수 있으면 그 답을 결론으로 말해. "문서에는 ~가 없어요"로 시작하지 마.
+- 질문이 여러 개면 문서에 있는 부분은 답하고, 문서에 없는 부분은 끝에 "○○는 담당자 확인이 필요해요"라고 한 줄만 붙여.
+- <문서>에 질문의 핵심에 대한 답이 없으면 answer 를 빈 문자열로 둬.
   "문서에는 없지만 참고로…"처럼 없다는 말이나 관련 정보로 대신 채우지 마.
 - 직원에게 하는 말이니 1~3문장으로 간결하게, 존댓말로.
 - 답에 쓴 문서의 [출처]를 sources 에 그대로 적어."""
@@ -87,14 +116,16 @@ def format_docs(chunks: list[dict]) -> str:
 
 def generate(state: State) -> State:
     user = f"<문서>\n{format_docs(state['chunks'])}\n</문서>\n\n<질문>\n{state['question']}\n</질문>"
-    r = llm().with_structured_output(Answer).invoke([("system", GENERATE_PROMPT), ("human", user)])
-    return {"answer": r.answer.strip(), "sources": r.sources}
+    r, t = ask(Answer, [("system", GENERATE_PROMPT), ("human", user)])
+    return {"answer": r.answer.strip(), "sources": r.sources, "tokens": {"generate": t}}
 
 
 CHECK_PROMPT = """너는 사실 검증 담당이야. 두 가지를 판정해.
 
-- grounded: <답변>의 모든 내용이 <문서>에 실제로 적혀 있나. 문서에 없는 숫자·조건·약속이 하나라도 있으면 false. 문서를 바꿔 말한 것은 괜찮아.
-- direct: <답변>이 <질문>에 직접 답하나. "문서에 없다"고 하거나 관련 정보만 늘어놓으면 false."""
+- grounded: <답변>의 모든 내용이 <문서>에 적혀 있거나 문서의 사실에서 바로 따라 나오나 (예: "11시부터 가능" → "12시에 가능").
+  문서에 없는 숫자·조건·약속이 하나라도 있으면 false. 문서를 바꿔 말한 것은 괜찮아.
+- direct: <답변>이 <질문>의 핵심에 답하나. 질문이 여러 개일 때 핵심을 답하고 나머지를 "확인이 필요하다"고 했으면 true.
+  핵심 질문에 "문서에 없다"고만 하거나 관련 정보만 늘어놓으면 false."""
 
 
 def check(state: State) -> State:
@@ -104,8 +135,8 @@ def check(state: State) -> State:
                 "reply": NOT_FOUND}
     user = (f"<문서>\n{format_docs(state['chunks'])}\n</문서>\n\n<질문>\n{state['question']}\n</질문>\n\n"
             f"<답변>\n{state['answer']}\n</답변>")
-    r = llm().with_structured_output(Check).invoke([("system", CHECK_PROMPT), ("human", user)])
-    out = {"grounded": r.grounded, "direct": r.direct, "check_reason": r.reason}
+    r, t = ask(Check, [("system", CHECK_PROMPT), ("human", user)])
+    out = {"grounded": r.grounded, "direct": r.direct, "check_reason": r.reason, "tokens": {"check": t}}
     if not (r.grounded and r.direct):
         return {**out, "reply": NOT_FOUND}
     cite = "\n".join(f"📄 출처: {s}" for s in known_sources(state))
@@ -127,7 +158,7 @@ def chitchat(state: State) -> State:
         [("system", "너는 숙소 운영팀의 사내 도우미야. 직원의 인사·잡담에 한 문장으로 짧게 답해."),
          ("human", state["question"])]
     )
-    return {"reply": r.text.strip()}
+    return {"reply": r.text.strip(), "tokens": {"chitchat": usage(r)}}
 
 
 # ── 분기: ① 분류 결과(intent)를 보고 다음 노드를 고른다 ──
@@ -137,11 +168,20 @@ def route(state: State) -> str:
     return {"faq": "retrieve", "escalate": "escalate", "chitchat": "chitchat"}[state["intent"]]
 
 
+def timed(name: str, fn):
+    def node(state: State) -> State:
+        start = time.perf_counter()
+        out = fn(state)
+        return {**out, "latency_ms": {name: round((time.perf_counter() - start) * 1000)}}
+
+    return node
+
+
 def build():
     g = StateGraph(State)
     for name, fn in [("classify", classify), ("retrieve", retrieve), ("generate", generate),
                      ("check", check), ("escalate", escalate), ("chitchat", chitchat)]:
-        g.add_node(name, fn)
+        g.add_node(name, timed(name, fn))
     g.add_edge(START, "classify")
     g.add_conditional_edges("classify", route, ["retrieve", "escalate", "chitchat"])
     g.add_edge("retrieve", "generate")
@@ -162,23 +202,31 @@ def answer(question: str, *, user_id: str | None = None, session_id: str | None 
     from bnb2.tracing import handler
 
     h = handler()
+    start = time.perf_counter()
     with propagate_attributes(trace_name="bnb2", user_id=user_id, session_id=session_id, tags=tags):
         state = build().invoke({"question": question}, {"callbacks": [h], "run_name": "bnb2"})
-    return {**state, "trace_id": h.last_trace_id}
+    return {**state, "trace_id": h.last_trace_id, "total_ms": round((time.perf_counter() - start) * 1000)}
 
 
 def run(question: str) -> None:
-    """노드가 하나 끝날 때마다 그 노드가 State 에 쓴 값을 출력한다. 실행 기록은 Langfuse 로 간다."""
+    """노드가 하나 끝날 때마다 그 노드가 State 에 쓴 값을 출력한다. 실행 기록은 Langfuse 와 우리 DB 로 간다."""
     from langfuse import propagate_attributes
 
+    from bnb2 import store
     from bnb2.tracing import client, handler
 
     print(f"❓ {question}\n")
-    config = {"callbacks": [handler()], "run_name": "bnb2"}
+    h = handler()
+    config = {"callbacks": [h], "run_name": "bnb2"}
+    start = time.perf_counter()
     with propagate_attributes(trace_name="bnb2", tags=["cli"]):
-        steps = list(build().stream({"question": question}, config, stream_mode="updates"))
+        # updates: 노드별로 바뀐 칸 (출력용), values: 그때까지의 전체 State (마지막 것 = 최종 State)
+        chunks = list(build().stream({"question": question}, config, stream_mode=["updates", "values"]))
+    total_ms = round((time.perf_counter() - start) * 1000)
     client().flush()  # 프로그램이 바로 끝나므로, 쌓인 기록을 지금 전송
-    for step in steps:
+    final = [c for mode, c in chunks if mode == "values"][-1]
+    store.record({**final, "trace_id": h.last_trace_id, "total_ms": total_ms}, channel="cli")
+    for step in (c for mode, c in chunks if mode == "updates"):
         for node, update in step.items():
             print(f"── {node} ──")
             for k, v in update.items():

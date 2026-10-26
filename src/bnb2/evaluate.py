@@ -14,8 +14,18 @@ DATASET = "bnb2-testset"
 TESTSET = Path("data/testset.jsonl")  # 기존 bnb 에서 복사. 실제 대화라 git 제외
 
 
-def load_testset() -> list[dict]:
-    return [json.loads(line) for line in TESTSET.read_text().splitlines() if line.strip()]
+def load_testset(path: Path = TESTSET) -> list[dict]:
+    return [json.loads(line) for line in path.read_text().splitlines() if line.strip()]
+
+
+def add_to_testset(row: dict, path: Path = TESTSET) -> dict:
+    """시험지 끝에 한 문제를 붙인다. 번호는 지금 가장 큰 번호 + 1 (중간에 지운 번호는 다시 쓰지 않는다)."""
+    text = path.read_text() if path.exists() else ""
+    rows = [json.loads(line) for line in text.splitlines() if line.strip()]
+    new = {"id": max((r["id"] for r in rows), default=-1) + 1, **row}
+    with path.open("a") as f:
+        f.write(("" if not text or text.endswith("\n") else "\n") + json.dumps(new, ensure_ascii=False) + "\n")
+    return new
 
 
 def to_item(row: dict) -> dict:
@@ -121,7 +131,30 @@ def to_row(r) -> dict | None:
         "intent": r.output["intent"], "blocked": r.output["blocked"],
         "grade": ev["grade"].value, "hallucination": ev["hallucination"].value,
         "retrieval_hit": ev["retrieval_hit"].value, "reason": ev["grade"].comment,
+        "chunks": r.output.get("chunks", []),
     }
+
+
+CAUSES = {
+    "hallucination": "환각: 문서에 없는 내용을 지어냄",
+    "routing": "분류: 사람 판단·잡담으로 넘김 (답을 주지 않음)",
+    "retrieval": "검색·문서: 정답 정보가 검색되지 않음",
+    "blocked": "과잉 차단: 근거가 검색됐는데 답을 막음",
+    "generation": "답변 생성: 근거가 검색됐는데 틀리게 답함",
+}
+
+
+def cause(r: dict) -> str | None:
+    """정답이 아닌 문제가 어디서 틀렸나. 채점 필드만으로 판정해서 어느 단계를 고칠지 알려준다."""
+    if r["grade"] == "correct":
+        return None
+    if r["hallucination"]:
+        return "hallucination"
+    if r["intent"] != "faq":
+        return "routing"
+    if not r["retrieval_hit"]:
+        return "retrieval"
+    return "blocked" if r["blocked"] else "generation"
 
 
 # ── 6-3: 집계 ──
@@ -181,6 +214,8 @@ def report(run_name: str) -> None:
 
 
 def experiment(limit: int | None, run_name: str) -> None:
+    from bnb2 import store
+    from bnb2.graph import MODEL
     from bnb2.retrieve import warm_query_cache
 
     lf = client()
@@ -191,14 +226,16 @@ def experiment(limit: int | None, run_name: str) -> None:
     result = lf.run_experiment(
         name="bnb2", run_name=run_name, data=items, task=task, evaluators=[judge],
         run_evaluators=[run_summary], max_concurrency=4,
-        metadata={"answer_model": "claude-haiku-5-5", "judge_model": JUDGE_MODEL},
+        metadata={"answer_model": MODEL, "judge_model": JUDGE_MODEL},
     )
     lf.flush()
 
     rows = [row for r in result.item_results if (row := to_row(r))]
     failed = len(result.item_results) - len(rows)
     out = Path(f"data/eval-{run_name}.jsonl")  # 문제별 결과 (git 제외)
-    out.write_text("".join(json.dumps(r, ensure_ascii=False) + "\n" for r in rows))
+    out.write_text("".join(json.dumps(r, ensure_ascii=False) + "\n" for r in rows))  # DB 저장이 실패해도 남는 사본
+    store.save_eval(run_name, rows, answer_model=MODEL, judge_model=JUDGE_MODEL, url=result.dataset_run_url,
+                    commit=store.git_commit())
     if limit:  # 소수 검토용이면 문제별로 자세히
         for r in rows:
             print(f"\n[{r['id']}] {r['topic']} | {r['grade']} | 환각={r['hallucination']} "

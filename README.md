@@ -123,6 +123,19 @@ LLM에게 "문서에 없으면 지어내지 마"라고 **지시하는 것만으�
 
 Langfuse 무료 플랜은 30일 뒤 기록을 지우므로, 문서 개선의 근거인 피드백 원본은 우리 DB에 둔다.
 
+## 운영 대시보드
+
+Langfuse 는 트레이스를 하나씩 열어야 내용이 보이고, 시험 결과를 한눈에 비교하기 어렵고, 30일 뒤 기록이 지워진다.
+그래서 봇이 질문마다 **한 행씩 우리 Postgres 에 기록**하고, 그 표만 읽는 운영 화면을 따로 만들었다 (`uv run bnb2 web`).
+
+| 화면 | 보는 것 |
+|---|---|
+| 개요 | 질문 수, 문서 질문 해결률, 확인 필요 건수, 👍 비율, 응답 시간, 비용 (이전 기간 대비 증감) · 일별 처리 결과 · 단계별 응답 시간 · 최근 시험 |
+| 처리함 | 찾지 못함 · 담당자 호출 · 오류 · 👎 받은 질문만. 처리 상태(미처리 / 문서 보강함 / 무시)와 메모, 정답을 적어 **시험지에 추가**, 문서를 고친 뒤 **다시 돌려보기**. 사이드바에 처리 대기 건수 |
+| 대화 | 모든 질문을 한 줄씩. 결과·피드백·경로로 거르고, 누르면 분류 이유 → 검색 문서와 유사도 → 답변 초안 → 근거 검사 판정 → 피드백 → 시간·토큰·비용 |
+| 시험 | 점수와 정답·오답·보류·환각·차단율 (n8n 기준선이나 다른 시험 대비), **틀린 이유 자동 분류**(검색·문서 / 과잉 차단 / 답변 생성 / 분류 / 환각 → 고칠 곳), 주제별 결과, 문제별 호스트 답 vs 봇 답 |
+| 문서 | 문서 항목마다 검색된 횟수 · 1위 횟수 · 답에 쓰인 횟수, **한 번도 검색되지 않은 항목**, 못 찾은 질문이 몰린 항목, 파일별 쓰임 |
+
 ## 실행
 
 ```bash
@@ -138,12 +151,14 @@ uv run bnb2 slack             # 슬랙 봇 (슬랙 앱은 slack-manifest.yml 붙
 |---|---|
 | `uv run bnb2 search "질문"` | 검색 결과 top-4와 유사도 |
 | `uv run bnb2 graph` | 그래프 구조 (Mermaid) |
-| `uv run bnb2 dataset` | 시험지를 Langfuse Dataset으로 등록 |
+| `uv run bnb2 dataset` | 시험지를 Langfuse Dataset으로 등록 (처리함에서 문제를 추가한 뒤에도 다시 실행) |
 | `uv run bnb2 eval 이름 [개수]` | 시험 + Sonnet 채점 + 집계 |
 | `uv run bnb2 report 이름` | 저장된 결과로 재집계 (API 호출 없음) |
 | `uv run bnb2 dashboard` | Langfuse 대시보드를 코드로 생성 |
 | `uv run bnb2 feedback [--comments] [--csv]` | 슬랙 피드백 목록 / CSV |
-| `uv run pytest -q` | 테스트 13개 |
+| `uv run bnb2 web` | 운영 대시보드 (http://127.0.0.1:8000): 개요 · 처리함 · 대화 · 시험 · 문서. 처음 한 번 `cd web && npm install && npm run build` |
+| `uv run bnb2 backfill` | 대시보드 이전 기록 가져오기 (`data/eval-*.jsonl`, Langfuse 최근 30일) |
+| `uv run pytest -q` | 테스트 21개 |
 
 ## 구조
 
@@ -156,7 +171,11 @@ src/bnb2/
 ├── evaluate.py    # 6단계: Dataset, Experiment, Sonnet 채점, 집계
 ├── dashboard.py   # 6단계: 대시보드 위젯 9개 (Dashboard as Code)
 ├── slack.py       # 7·8단계: 슬랙 봇, 👍/👎, 담당자 DM
-└── feedback.py    # 8단계: 피드백 원본 보관
+├── feedback.py    # 8단계: 피드백 원본 보관
+├── store.py       # 10단계: 질문 기록·시험 결과 표 (conversations, eval_runs, eval_items)
+├── api.py         # 10단계: 운영 대시보드 API (FastAPI)
+└── backfill.py    # 10단계: 이전 기록 가져오기
+web/               # 10단계: 운영 대시보드 화면 (React + Vite + Tailwind + shadcn/ui + Recharts)
 kb.example/        # 공개용 문서 견본 (실제 kb/ 는 주소·와이파이 때문에 git 제외)
 docs/              # 단계별 설계·구현 기록
 ```
@@ -165,7 +184,7 @@ docs/              # 단계별 설계·구현 기록
 
 설계부터 각 단계의 구현, 결정 이유, 실제로 겪은 문제를 [docs/](docs/)에 남겼다.
 
-[설계](docs/00_설계.md) · [0 뼈대](docs/0단계_프로젝트_뼈대.md) · [1 인프라](docs/1단계_인프라.md) · [2 문서 적재](docs/2단계_문서_적재.md) · [3 검색](docs/3단계_검색.md) · [4 LangGraph](docs/4단계_LangGraph.md) · [5 Langfuse](docs/5단계_Langfuse_트레이싱.md) · [6-1 시험지](docs/6-1단계_시험지_등록.md) · [6-2 채점기](docs/6-2단계_채점기.md) · [6-3 집계](docs/6-3단계_전체_시험_집계.md) · [6-4 대시보드](docs/6-4단계_대시보드.md) · [7 슬랙 봇](docs/7단계_슬랙_봇.md) · [8 피드백](docs/8단계_피드백.md) · [9 마무리](docs/9단계_마무리.md)
+[설계](docs/00_설계.md) · [0 뼈대](docs/0단계_프로젝트_뼈대.md) · [1 인프라](docs/1단계_인프라.md) · [2 문서 적재](docs/2단계_문서_적재.md) · [3 검색](docs/3단계_검색.md) · [4 LangGraph](docs/4단계_LangGraph.md) · [5 Langfuse](docs/5단계_Langfuse_트레이싱.md) · [6-1 시험지](docs/6-1단계_시험지_등록.md) · [6-2 채점기](docs/6-2단계_채점기.md) · [6-3 집계](docs/6-3단계_전체_시험_집계.md) · [6-4 대시보드](docs/6-4단계_대시보드.md) · [7 슬랙 봇](docs/7단계_슬랙_봇.md) · [8 피드백](docs/8단계_피드백.md) · [9 마무리](docs/9단계_마무리.md) · [10 운영 대시보드](docs/10단계_운영_대시보드.md)
 
 ## 한계와 다음 할 일
 
